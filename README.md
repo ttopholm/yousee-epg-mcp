@@ -10,6 +10,23 @@ claude mcp add yousee-epg -- uvx yousee-epg-mcp
 
 Det var det! Spørg nu Claude ting som *"Hvad kører på DR1 i aften?"*
 
+## Claude Desktop
+
+Åbn **Settings → Developer → Edit Config** og tilføj `yousee-epg` under `mcpServers`:
+
+```json
+{
+  "mcpServers": {
+    "yousee-epg": {
+      "command": "uvx",
+      "args": ["yousee-epg-mcp"]
+    }
+  }
+}
+```
+
+Genstart Claude Desktop, og serveren er klar.
+
 ## Tools
 
 | Tool | Beskrivelse |
