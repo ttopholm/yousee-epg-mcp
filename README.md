@@ -2,6 +2,14 @@
 
 Se hvad der kører i TV via Claude eller ChatGPT. MCP-server til YouSee's danske TV-guide.
 
+## Hurtig installation (Claude Code)
+
+```bash
+claude mcp add yousee-epg -- uvx yousee-epg-mcp
+```
+
+Det var det! Spørg nu Claude ting som *"Hvad kører på DR1 i aften?"*
+
 ## Tools
 
 | Tool | Beskrivelse |
@@ -9,30 +17,9 @@ Se hvad der kører i TV via Claude eller ChatGPT. MCP-server til YouSee's danske
 | `yousee_channels` | Alle tilgængelige TV-kanaler med ID og logo |
 | `yousee_programs` | Programoversigt for en kanal på en dato (±7 dage) |
 | `yousee_search` | Søg efter et program på tværs af alle kanaler |
-| `yousee_now_playing` | Hvad kører lige nu (populære kanaler eller specifik kanal) |
+| `yousee_now_playing` | Hvad kører lige nu |
 | `yousee_prime_time` | Hvad kører i aften kl. 19-22 på de store kanaler |
 | `yousee_genre` | Find programmer efter genre (Sport, Film, Nyheder, Serier, Børn) |
-
-## Installation
-
-```bash
-pip install git+https://github.com/ttopholm/yousee-epg-mcp.git
-```
-
-## Brug med Claude Code
-
-```bash
-claude mcp add yousee-epg -- yousee-epg
-```
-
-## Brug med ChatGPT
-
-```bash
-yousee-epg-http                              # Start HTTP-server på port 8000
-cloudflared tunnel --url http://localhost:8000  # Gør den tilgængelig
-```
-
-Tilføj URL + `/mcp` som connector i ChatGPT (kræver Developer Mode + Plus/Pro).
 
 ## Eksempler
 
@@ -42,6 +29,46 @@ Tilføj URL + `/mcp` som connector i ChatGPT (kræver Developer Mode + Plus/Pro)
 - *"Er der sport på TV i dag?"*
 - *"Vis mig film på TV i morgen"*
 
+## ChatGPT
+
+ChatGPT kræver en HTTP-server tilgængelig fra internettet:
+
+```bash
+pip install yousee-epg-mcp
+yousee-epg-http
+```
+
+Gør den tilgængelig med f.eks. Cloudflare Tunnel:
+
+```bash
+cloudflared tunnel --url http://localhost:8000
+```
+
+Tilføj din URL + `/mcp` som connector i ChatGPT (kræver Developer Mode + Plus/Pro).
+
+## Docker
+
+```bash
+docker build -t yousee-epg-mcp .
+docker run -p 8000:8000 yousee-epg-mcp
+```
+
 ## API
 
 Bruger YouSee's offentlige EPG — ingen nøgle påkrævet, ±7 dage.
+
+- `GET https://secure.yousee.tv/epg/v2/channels`
+- `GET https://secure.yousee.tv/epg/v2/channels/:id/:dato`
+
+## Release
+
+Ny version publiceres automatisk til PyPI ved git tag:
+
+```bash
+git tag v1.0.0
+git push origin v1.0.0
+```
+
+## Licens
+
+MIT
