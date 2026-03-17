@@ -1,5 +1,7 @@
 # YouSee EPG MCP Server 📺
 
+https://github.com/user-attachments/assets/02aa9b9a-df91-4494-af2a-953402734168
+
 **[Dansk](#dansk)** | **[English](#english)**
 
 ---
