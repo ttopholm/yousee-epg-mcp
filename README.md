@@ -2,17 +2,40 @@
 
 Se hvad der kører i TV via Claude eller ChatGPT. MCP-server til YouSee's danske TV-guide.
 
-## Hurtig installation (Claude Code)
+## Installation
+
+Installer-scriptet sætter alt op for dig: Python, uv og konfiguration af Claude Desktop + Claude Code.
+
+### macOS / Linux
+
+Åbn **Terminal** og kør:
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/ttopholm/yousee-epg-mcp/main/install.sh | bash
+```
+
+### Windows
+
+Åbn **PowerShell** og kør:
+
+```powershell
+irm https://raw.githubusercontent.com/ttopholm/yousee-epg-mcp/main/install.ps1 | iex
+```
+
+### Manuel installation
+
+<details>
+<summary>Hvis du foretrækker at installere manuelt</summary>
+
+**Claude Code:**
 
 ```bash
 claude mcp add yousee-epg -- uvx yousee-epg-mcp
 ```
 
-Det var det! Spørg nu Claude ting som *"Hvad kører på DR1 i aften?"*
+**Claude Desktop:**
 
-## Claude Desktop
-
-Åbn **Settings → Developer → Edit Config** og tilføj `yousee-epg` under `mcpServers`:
+Åbn **Settings → Developer → Edit Config** og tilføj:
 
 ```json
 {
@@ -25,7 +48,9 @@ Det var det! Spørg nu Claude ting som *"Hvad kører på DR1 i aften?"*
 }
 ```
 
-Genstart Claude Desktop, og serveren er klar.
+Genstart Claude Desktop bagefter.
+
+</details>
 
 ## Tools
 
