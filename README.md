@@ -35,7 +35,7 @@ ChatGPT kræver en HTTP-server tilgængelig fra internettet:
 
 ```bash
 pip install yousee-epg-mcp
-yousee-epg-http
+yousee-epg-mcp-http
 ```
 
 Gør den tilgængelig med f.eks. Cloudflare Tunnel:

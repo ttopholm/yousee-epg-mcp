@@ -31,8 +31,8 @@ Repository = "https://github.com/ttopholm/yousee-epg-mcp"
 Issues = "https://github.com/ttopholm/yousee-epg-mcp/issues"
 
 [project.scripts]
-yousee-epg = "yousee_epg.server:main"
-yousee-epg-http = "yousee_epg.server:main_http"
+yousee-epg-mcp = "yousee_epg.server:main"
+yousee-epg-mcp-http = "yousee_epg.server:main_http"
 
 [build-system]
 requires = ["hatchling", "hatch-vcs"]
