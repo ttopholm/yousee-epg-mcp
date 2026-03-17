@@ -8,20 +8,29 @@ API:
   GET https://secure.yousee.tv/epg/v2/channels/:channelid/:date  (±7 dage)
 """
 
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 import asyncio
 from fastmcp import FastMCP
 import httpx
 
 mcp = FastMCP(
     "yousee-epg",
-    instructions="YouSee TV-guide. Brug yousee_channels til at finde kanal-ID'er, "
-    "yousee_programs til at hente programmer for en kanal, "
-    "og yousee_search til at søge efter et program på tværs af kanaler.",
+    instructions=(
+        "YouSee TV-guide for danske TV-kanaler. "
+        "Brug yousee_channels til kanal-ID'er, "
+        "yousee_programs til programoversigt for en kanal, "
+        "yousee_search til at søge efter programmer, "
+        "yousee_now_playing til hvad der kører lige nu, "
+        "yousee_prime_time til aftenens programmer, "
+        "yousee_genre til at finde programmer efter genre."
+    ),
 )
 
 BASE_URL = "https://secure.yousee.tv/epg/v2"
 _client = httpx.AsyncClient(base_url=BASE_URL, timeout=15)
+
+# Populære danske kanaler til hurtig scanning
+POPULAR_CHANNEL_IDS = [1, 2, 3, 4, 5, 7, 8, 9, 10, 17, 25, 26, 30, 79, 264]
 
 
 async def _get(path: str) -> dict | list:
@@ -42,11 +51,54 @@ def _extract_list(data, *keys) -> list:
     return []
 
 
+def _summarize_program(prog: dict) -> dict:
+    """Lav et kompakt summary af et program."""
+    return {
+        "title": prog.get("title", ""),
+        "channel": prog.get("channelName", ""),
+        "channel_id": prog.get("channelId", ""),
+        "begin": prog.get("begin", ""),
+        "end": prog.get("end", ""),
+        "description": (prog.get("description") or "")[:300],
+        "genre": prog.get("genreName", ""),
+        "sub_genre": prog.get("subGenreName", ""),
+        "age_rating": prog.get("ageRating", 0),
+        "is_series": prog.get("isSeries", False),
+        "series_name": prog.get("seriesName", ""),
+        "episode": prog.get("episodeId", ""),
+        "cast": prog.get("cast", [])[:5],
+        "year": prog.get("productionYear", ""),
+    }
+
+
+def _parse_time(time_str: str) -> datetime | None:
+    """Parse ISO tidspunkt fra API."""
+    if not time_str:
+        return None
+    try:
+        return datetime.fromisoformat(time_str)
+    except (ValueError, TypeError):
+        return None
+
+
+# ─── Tools ───────────────────────────────────────────────────────────────
+
+
 @mcp.tool()
 async def yousee_channels() -> list:
     """Hent alle tilgængelige YouSee TV-kanaler med ID og navn."""
     data = await _get("channels")
-    return _extract_list(data, "channels", "data", "result") or data
+    channels = _extract_list(data, "channels", "data", "result") or data
+    # Returner kun de mest nyttige felter
+    return [
+        {
+            "id": ch.get("id"),
+            "name": ch.get("long_name") or ch.get("name", ""),
+            "logo": ch.get("logoSvg") or ch.get("logoPng400", ""),
+        }
+        for ch in channels
+        if ch.get("id")
+    ]
 
 
 @mcp.tool()
@@ -60,7 +112,8 @@ async def yousee_programs(channel_id: str, date: str | None = None) -> list:
     if date is None:
         date = datetime.now().strftime("%Y-%m-%d")
     data = await _get(f"channels/{channel_id}/{date}")
-    return _extract_list(data, "programs", "data", "result", "entries") or data
+    programs = _extract_list(data, "programs", "data", "result", "entries") or data
+    return [_summarize_program(p) for p in programs] if isinstance(programs, list) else programs
 
 
 @mcp.tool()
@@ -72,7 +125,8 @@ async def yousee_search(query: str, days: int = 3) -> list[dict]:
         days: Antal dage frem at søge (1-7, standard 3).
     """
     days = min(max(days, 1), 7)
-    channels = await yousee_channels()
+    channels = await _get("channels")
+    channels = _extract_list(channels, "channels", "data", "result") or channels
     if not channels:
         return [{"error": "Kunne ikke hente kanaler"}]
 
@@ -80,43 +134,151 @@ async def yousee_search(query: str, days: int = 3) -> list[dict]:
     today = datetime.now()
     sem = asyncio.Semaphore(10)
 
-    async def _fetch_and_filter(ch_id: str, ch_name: str, date: str) -> list[dict]:
+    async def _fetch_and_filter(ch_id: str, date: str) -> list[dict]:
         async with sem:
             try:
-                programs = await yousee_programs(ch_id, date)
+                data = await _get(f"channels/{ch_id}/{date}")
+                programs = _extract_list(data, "programs", "data", "result", "entries") or data
             except Exception:
                 return []
         hits = []
         for prog in programs if isinstance(programs, list) else []:
             title = prog.get("title", "") or ""
-            desc = prog.get("description", "") or prog.get("desc", "") or ""
-            if query_lower in title.lower() or query_lower in desc.lower():
-                hits.append({
-                    "title": title,
-                    "description": desc[:300],
-                    "channel": ch_name,
-                    "channel_id": ch_id,
-                    "date": date,
-                    "begin": prog.get("begin") or prog.get("start") or prog.get("startTime") or "",
-                    "end": prog.get("end") or prog.get("stop") or prog.get("endTime") or "",
-                    "category": prog.get("category") or prog.get("genre") or "",
-                })
+            desc = prog.get("description", "") or ""
+            series = prog.get("seriesName", "") or ""
+            if query_lower in title.lower() or query_lower in desc.lower() or query_lower in series.lower():
+                hits.append(_summarize_program(prog))
         return hits
 
     tasks = []
     for day_offset in range(days):
         date = (today + timedelta(days=day_offset)).strftime("%Y-%m-%d")
         for ch in channels:
-            ch_id = ch.get("id") or ch.get("channel_id") or ch.get("channelId")
-            ch_name = ch.get("name") or ch.get("title") or str(ch_id)
+            ch_id = ch.get("id")
             if not ch_id:
                 continue
-            tasks.append(_fetch_and_filter(str(ch_id), ch_name, date))
+            tasks.append(_fetch_and_filter(str(ch_id), date))
 
     all_hits = await asyncio.gather(*tasks)
     results = [hit for hits in all_hits for hit in hits]
 
     return results or [{"info": f"Ingen programmer fundet for '{query}' i de næste {days} dage."}]
+
+
+@mcp.tool()
+async def yousee_now_playing(channel_id: str | None = None) -> list[dict]:
+    """Se hvad der sendes lige nu på YouSee TV-kanaler.
+
+    Args:
+        channel_id: Valgfrit. Specifikt kanal-ID. Uden dette vises de mest populære kanaler.
+    """
+    now = datetime.now(timezone.utc)
+    date = now.strftime("%Y-%m-%d")
+    sem = asyncio.Semaphore(10)
+
+    if channel_id:
+        target_ids = [channel_id]
+    else:
+        target_ids = [str(cid) for cid in POPULAR_CHANNEL_IDS]
+
+    async def _get_current(ch_id: str) -> dict | None:
+        async with sem:
+            try:
+                data = await _get(f"channels/{ch_id}/{date}")
+                programs = _extract_list(data, "programs", "data", "result", "entries") or data
+            except Exception:
+                return None
+        for prog in programs if isinstance(programs, list) else []:
+            begin = _parse_time(prog.get("begin", ""))
+            end = _parse_time(prog.get("end", ""))
+            if begin and end and begin <= now <= end:
+                return _summarize_program(prog)
+        return None
+
+    tasks = [_get_current(cid) for cid in target_ids]
+    results = await asyncio.gather(*tasks)
+    return [r for r in results if r is not None] or [{"info": "Ingen programmer fundet lige nu."}]
+
+
+@mcp.tool()
+async def yousee_prime_time(date: str | None = None) -> list[dict]:
+    """Vis hvad der kører i prime time (kl. 19-22) på de populære danske kanaler.
+
+    Args:
+        date: Dato i YYYY-MM-DD format. Standard er i dag.
+    """
+    if date is None:
+        date = datetime.now().strftime("%Y-%m-%d")
+
+    # Prime time: 19:00-22:00 dansk tid (UTC+1/+2)
+    prime_start_hour = 17  # 19 CET = 17 UTC (vinter) / 17 CEST = 17 UTC (sommer-ish)
+    prime_end_hour = 21
+
+    sem = asyncio.Semaphore(10)
+
+    async def _get_prime(ch_id: str) -> list[dict]:
+        async with sem:
+            try:
+                data = await _get(f"channels/{ch_id}/{date}")
+                programs = _extract_list(data, "programs", "data", "result", "entries") or data
+            except Exception:
+                return []
+        hits = []
+        for prog in programs if isinstance(programs, list) else []:
+            begin = _parse_time(prog.get("begin", ""))
+            end = _parse_time(prog.get("end", ""))
+            if not begin or not end:
+                continue
+            # Overlap med prime time vindue
+            if begin.hour < prime_end_hour and end.hour >= prime_start_hour:
+                hits.append(_summarize_program(prog))
+        return hits
+
+    tasks = [_get_prime(str(cid)) for cid in POPULAR_CHANNEL_IDS]
+    all_hits = await asyncio.gather(*tasks)
+    results = [hit for hits in all_hits for hit in hits]
+
+    return results or [{"info": f"Ingen prime time programmer fundet for {date}."}]
+
+
+@mcp.tool()
+async def yousee_genre(genre: str, date: str | None = None) -> list[dict]:
+    """Find programmer efter genre på de populære kanaler.
+
+    Args:
+        genre: Genre at filtrere på, f.eks. "Sport", "Film", "Nyheder", "Serier", "Børn", "Fakta".
+        date: Dato i YYYY-MM-DD format. Standard er i dag.
+    """
+    if date is None:
+        date = datetime.now().strftime("%Y-%m-%d")
+
+    genre_lower = genre.lower()
+    sem = asyncio.Semaphore(10)
+
+    async def _get_by_genre(ch_id: str) -> list[dict]:
+        async with sem:
+            try:
+                data = await _get(f"channels/{ch_id}/{date}")
+                programs = _extract_list(data, "programs", "data", "result", "entries") or data
+            except Exception:
+                return []
+        hits = []
+        for prog in programs if isinstance(programs, list) else []:
+            g = (prog.get("genreName") or "").lower()
+            sg = (prog.get("subGenreName") or "").lower()
+            title = (prog.get("title") or "").lower()
+            if genre_lower in g or genre_lower in sg or genre_lower in title:
+                hits.append(_summarize_program(prog))
+        return hits
+
+    tasks = [_get_by_genre(str(cid)) for cid in POPULAR_CHANNEL_IDS]
+    all_hits = await asyncio.gather(*tasks)
+    results = [hit for hits in all_hits for hit in hits]
+
+    return results or [{"info": f"Ingen '{genre}' programmer fundet på {date}."}]
+
+
+# ─── Entry points ────────────────────────────────────────────────────────
 
 
 def main():

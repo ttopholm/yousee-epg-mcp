@@ -1,20 +1,17 @@
 # YouSee EPG MCP Server 📺
 
-Se hvad der kører i TV via Claude eller ChatGPT. Denne MCP-server giver AI-assistenter adgang til YouSee's TV-guide, så du kan stille spørgsmål som:
-
-- *"Hvornår sendes Vild med dans?"*
-- *"Hvad kører på DR1 i aften?"*
-- *"Er der fodbold på TV i denne uge?"*
+Se hvad der kører i TV via Claude eller ChatGPT. MCP-server til YouSee's danske TV-guide.
 
 ## Tools
 
 | Tool | Beskrivelse |
 |------|-------------|
-| `yousee_channels` | Alle tilgængelige TV-kanaler |
-| `yousee_programs` | Programmer for en kanal på en dato (±7 dage) |
+| `yousee_channels` | Alle tilgængelige TV-kanaler med ID og logo |
+| `yousee_programs` | Programoversigt for en kanal på en dato (±7 dage) |
 | `yousee_search` | Søg efter et program på tværs af alle kanaler |
-
----
+| `yousee_now_playing` | Hvad kører lige nu (populære kanaler eller specifik kanal) |
+| `yousee_prime_time` | Hvad kører i aften kl. 19-22 på de store kanaler |
+| `yousee_genre` | Find programmer efter genre (Sport, Film, Nyheder, Serier, Børn) |
 
 ## Installation
 
@@ -22,82 +19,29 @@ Se hvad der kører i TV via Claude eller ChatGPT. Denne MCP-server giver AI-assi
 pip install git+https://github.com/ttopholm/yousee-epg-mcp.git
 ```
 
-Eller lokalt:
-
-```bash
-cd yousee-epg-mcp
-pip install .
-```
-
----
-
 ## Brug med Claude Code
 
 ```bash
 claude mcp add yousee-epg -- yousee-epg
 ```
 
-Færdig! Start Claude Code og stil dine TV-spørgsmål.
-
----
-
 ## Brug med ChatGPT
 
-ChatGPT kræver en MCP-server der kører over HTTP og er tilgængelig fra internettet.
-
-### Trin 1: Start serveren
-
 ```bash
-yousee-epg-http
+yousee-epg-http                              # Start HTTP-server på port 8000
+cloudflared tunnel --url http://localhost:8000  # Gør den tilgængelig
 ```
 
-Serveren starter på `http://localhost:8000`. MCP-endpointet er `http://localhost:8000/mcp`.
+Tilføj URL + `/mcp` som connector i ChatGPT (kræver Developer Mode + Plus/Pro).
 
-### Trin 2: Gør serveren tilgængelig fra internettet
+## Eksempler
 
-Serveren skal kunne nås udefra. Her er et par muligheder:
-
-**Mulighed A: Cloudflare Tunnel (anbefalet, gratis)**
-
-```bash
-# Installer cloudflared: https://developers.cloudflare.com/cloudflare-one/connections/connect-networks/downloads/
-cloudflared tunnel --url http://localhost:8000
-```
-
-Du får en URL som `https://xxxx-xxxx.trycloudflare.com`.
-
-**Mulighed B: ngrok**
-
-```bash
-ngrok http 8000
-```
-
-Du får en URL som `https://xxxx.ngrok-free.app`.
-
-**Mulighed C: Kør på en server**
-
-Deploy serveren på en VPS, f.eks. via Docker, og brug din offentlige IP/domæne.
-
-### Trin 3: Tilslut i ChatGPT
-
-1. Åbn ChatGPT → **Indstillinger** → **Connectors** → **Advanced Settings**
-2. Slå **Developer Mode** til
-3. Tilføj en ny connector med din URL + `/mcp`, f.eks.:
-   ```
-   https://xxxx-xxxx.trycloudflare.com/mcp
-   ```
-4. Start en ny chat, klik **"Add sources"** og vælg din connector
-5. Spørg om TV-programmet!
-
-> **Bemærk:** Developer Mode kræver ChatGPT Plus eller Pro.
-
----
+- *"Hvad kører på DR1 lige nu?"*
+- *"Hvornår sendes Vild med dans?"*
+- *"Hvad er der i TV i aften?"*
+- *"Er der sport på TV i dag?"*
+- *"Vis mig film på TV i morgen"*
 
 ## API
 
-Bruger YouSee's offentlige EPG:
-
-- `GET https://secure.yousee.tv/epg/v2/channels`
-- `GET https://secure.yousee.tv/epg/v2/channels/:id/:dato`
-
-Ingen API-nøgle påkrævet. Data tilgængelig ±7 dage fra i dag.
+Bruger YouSee's offentlige EPG — ingen nøgle påkrævet, ±7 dage.
