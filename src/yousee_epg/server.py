@@ -25,7 +25,11 @@ mcp = FastMCP(
         "yousee_search til at søge efter programmer, "
         "yousee_now_playing til hvad der kører lige nu, "
         "yousee_prime_time til aftenens programmer, "
-        "yousee_genre til at finde programmer efter genre."
+        "yousee_genre til at finde programmer efter genre, "
+        "yousee_movies til at finde film på TV, "
+        "yousee_timeslot til at se hvad der kører på et givet tidspunkt, "
+        "yousee_program_details til fuld programinfo, "
+        "yousee_upcoming til de næste programmer på en kanal."
     ),
 )
 
