@@ -121,8 +121,11 @@ configure_claude_desktop() {
 import json, os, sys
 
 config_file = '$config_file'
+uvx_path = os.popen('which uvx').read().strip()
+if not uvx_path:
+    uvx_path = os.path.expanduser('~/.local/bin/uvx')
 server_entry = {
-    'command': 'uvx',
+    'command': uvx_path,
     'args': ['yousee-epg-mcp']
 }
 
@@ -178,7 +181,8 @@ configure_claude_desktop
 # ─── 5. Konfigurer Claude Code ───────────────────────────────
 
 if command -v claude &>/dev/null; then
-    claude mcp add yousee-epg -- uvx yousee-epg-mcp 2>/dev/null && \
+    UVX_FULL=$(which uvx 2>/dev/null || echo "$HOME/.local/bin/uvx")
+    claude mcp add yousee-epg -- "$UVX_FULL" yousee-epg-mcp 2>/dev/null && \
         info "Claude Code konfigureret" || \
         warn "Claude Code: serveren er muligvis allerede tilføjet"
 else
