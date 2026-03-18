@@ -1,4 +1,4 @@
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 
 import httpx
 import pytest
@@ -10,8 +10,12 @@ from yousee_epg.server import (
     yousee_genre,
     yousee_now_playing,
     yousee_prime_time,
+    yousee_program_details,
     yousee_programs,
+    yousee_movies,
     yousee_search,
+    yousee_timeslot,
+    yousee_upcoming,
 )
 
 # Minimal channel list for _ensure_channel_names
@@ -182,4 +186,215 @@ class TestYouseeGenre:
             return_value=httpx.Response(200, json={"programs": []})
         )
         result = await yousee_genre("Opera", "2026-03-18")
+        assert result[0].get("info") is not None
+
+
+class TestYouseeMovies:
+    async def test_finds_movies(self, mock_api):
+        now = datetime.now(timezone.utc)
+        movie = {
+            "title": "The Matrix",
+            "channelName": "TV 2",
+            "channelId": "2",
+            "begin": (now + timedelta(hours=1)).isoformat(),
+            "end": (now + timedelta(hours=3)).isoformat(),
+            "genreName": "Film",
+        }
+        non_movie = {
+            "title": "Nyheder",
+            "channelName": "DR1",
+            "channelId": "1",
+            "begin": (now + timedelta(hours=1)).isoformat(),
+            "end": (now + timedelta(hours=2)).isoformat(),
+            "genreName": "Nyheder",
+        }
+        mock_api.get("/channels").mock(
+            return_value=httpx.Response(200, json=_EMPTY_CHANNELS_RESPONSE)
+        )
+        mock_api.get(url__regex=r"/channels/\d+/\d{4}-\d{2}-\d{2}").mock(
+            return_value=httpx.Response(200, json={"programs": [movie, non_movie]})
+        )
+        result = await yousee_movies()
+        assert all(r.get("genre", "").lower() == "film" for r in result)
+        assert any(r["title"] == "The Matrix" for r in result)
+
+    async def test_excludes_past_movies(self, mock_api):
+        now = datetime.now(timezone.utc)
+        past_movie = {
+            "title": "Old Movie",
+            "channelId": "1",
+            "begin": (now - timedelta(hours=4)).isoformat(),
+            "end": (now - timedelta(hours=2)).isoformat(),
+            "genreName": "Film",
+        }
+        mock_api.get("/channels").mock(
+            return_value=httpx.Response(200, json=_EMPTY_CHANNELS_RESPONSE)
+        )
+        mock_api.get(url__regex=r"/channels/\d+/\d{4}-\d{2}-\d{2}").mock(
+            return_value=httpx.Response(200, json={"programs": [past_movie]})
+        )
+        result = await yousee_movies()
+        assert result[0].get("info") is not None
+
+    async def test_no_movies_found(self, mock_api):
+        mock_api.get("/channels").mock(
+            return_value=httpx.Response(200, json=_EMPTY_CHANNELS_RESPONSE)
+        )
+        mock_api.get(url__regex=r"/channels/\d+/\d{4}-\d{2}-\d{2}").mock(
+            return_value=httpx.Response(200, json={"programs": []})
+        )
+        result = await yousee_movies()
+        assert result[0].get("info") is not None
+
+
+class TestYouseeTimeslot:
+    async def test_finds_programs_at_time(self, mock_api):
+        program = {
+            "title": "Aftenshowet",
+            "channelName": "DR1",
+            "channelId": "1",
+            "begin": "2026-03-18T19:00:00+01:00",
+            "end": "2026-03-18T20:30:00+01:00",
+        }
+        mock_api.get("/channels").mock(
+            return_value=httpx.Response(200, json=_EMPTY_CHANNELS_RESPONSE)
+        )
+        mock_api.get(url__regex=r"/channels/\d+/2026-03-18").mock(
+            return_value=httpx.Response(200, json={"programs": [program]})
+        )
+        result = await yousee_timeslot("20:00", "2026-03-18")
+        assert any(r["title"] == "Aftenshowet" for r in result)
+
+    async def test_no_programs_at_time(self, mock_api):
+        program = {
+            "title": "Morgen-TV",
+            "channelId": "1",
+            "begin": "2026-03-18T06:00:00+01:00",
+            "end": "2026-03-18T09:00:00+01:00",
+        }
+        mock_api.get("/channels").mock(
+            return_value=httpx.Response(200, json=_EMPTY_CHANNELS_RESPONSE)
+        )
+        mock_api.get(url__regex=r"/channels/\d+/2026-03-18").mock(
+            return_value=httpx.Response(200, json={"programs": [program]})
+        )
+        result = await yousee_timeslot("22:00", "2026-03-18")
+        assert result[0].get("info") is not None
+
+
+class TestYouseeProgramDetails:
+    async def test_finds_program_by_title(self, mock_api, sample_program):
+        mock_api.get("/channels").mock(
+            return_value=httpx.Response(200, json=_EMPTY_CHANNELS_RESPONSE)
+        )
+        mock_api.get(url__regex=r"/channels/\d+/\d{4}-\d{2}-\d{2}").mock(
+            return_value=httpx.Response(200, json={"programs": [sample_program]})
+        )
+        result = await yousee_program_details("Vild med dans")
+        assert result["title"] == "Vild med dans"
+        # Full description — not truncated to 300 chars
+        assert len(result.get("description", "")) > 300
+        # All cast members — not truncated to 5
+        assert len(result.get("cast", [])) == 6
+
+    async def test_finds_with_channel_id(self, mock_api, sample_program):
+        mock_api.get("/channels").mock(
+            return_value=httpx.Response(200, json=_EMPTY_CHANNELS_RESPONSE)
+        )
+        mock_api.get(url__regex=r"/channels/2/\d{4}-\d{2}-\d{2}").mock(
+            return_value=httpx.Response(200, json={"programs": [sample_program]})
+        )
+        result = await yousee_program_details("Vild med dans", channel_id="2")
+        assert result["title"] == "Vild med dans"
+
+    async def test_not_found(self, mock_api):
+        mock_api.get("/channels").mock(
+            return_value=httpx.Response(200, json=_EMPTY_CHANNELS_RESPONSE)
+        )
+        mock_api.get(url__regex=r"/channels/\d+/\d{4}-\d{2}-\d{2}").mock(
+            return_value=httpx.Response(200, json={"programs": []})
+        )
+        result = await yousee_program_details("Nonexistent")
+        assert result.get("info") is not None
+
+
+class TestYouseeUpcoming:
+    async def test_returns_upcoming_programs(self, mock_api):
+        now = datetime.now(timezone.utc)
+        programs = [
+            {
+                "title": f"Show {i}",
+                "channelId": "1",
+                "begin": (now + timedelta(hours=i)).isoformat(),
+                "end": (now + timedelta(hours=i + 1)).isoformat(),
+            }
+            for i in range(1, 7)
+        ]
+        mock_api.get("/channels").mock(
+            return_value=httpx.Response(200, json=_EMPTY_CHANNELS_RESPONSE)
+        )
+        date = now.strftime("%Y-%m-%d")
+        mock_api.get(f"/channels/1/{date}").mock(
+            return_value=httpx.Response(200, json={"programs": programs})
+        )
+        result = await yousee_upcoming("1")
+        assert len(result) == 5  # default limit
+        assert result[0]["title"] == "Show 1"
+
+    async def test_respects_limit(self, mock_api):
+        now = datetime.now(timezone.utc)
+        programs = [
+            {
+                "title": f"Show {i}",
+                "channelId": "1",
+                "begin": (now + timedelta(hours=i)).isoformat(),
+                "end": (now + timedelta(hours=i + 1)).isoformat(),
+            }
+            for i in range(1, 7)
+        ]
+        mock_api.get("/channels").mock(
+            return_value=httpx.Response(200, json=_EMPTY_CHANNELS_RESPONSE)
+        )
+        date = now.strftime("%Y-%m-%d")
+        mock_api.get(f"/channels/1/{date}").mock(
+            return_value=httpx.Response(200, json={"programs": programs})
+        )
+        result = await yousee_upcoming("1", limit=2)
+        assert len(result) == 2
+
+    async def test_excludes_finished_programs(self, mock_api):
+        now = datetime.now(timezone.utc)
+        past = {
+            "title": "Old show",
+            "channelId": "1",
+            "begin": (now - timedelta(hours=3)).isoformat(),
+            "end": (now - timedelta(hours=1)).isoformat(),
+        }
+        future = {
+            "title": "Next show",
+            "channelId": "1",
+            "begin": (now + timedelta(hours=1)).isoformat(),
+            "end": (now + timedelta(hours=2)).isoformat(),
+        }
+        mock_api.get("/channels").mock(
+            return_value=httpx.Response(200, json=_EMPTY_CHANNELS_RESPONSE)
+        )
+        date = now.strftime("%Y-%m-%d")
+        mock_api.get(f"/channels/1/{date}").mock(
+            return_value=httpx.Response(200, json={"programs": [past, future]})
+        )
+        result = await yousee_upcoming("1")
+        assert len(result) == 1
+        assert result[0]["title"] == "Next show"
+
+    async def test_no_upcoming(self, mock_api):
+        now = datetime.now(timezone.utc)
+        mock_api.get("/channels").mock(
+            return_value=httpx.Response(200, json=_EMPTY_CHANNELS_RESPONSE)
+        )
+        date = now.strftime("%Y-%m-%d")
+        mock_api.get(f"/channels/1/{date}").mock(
+            return_value=httpx.Response(200, json={"programs": []})
+        )
+        result = await yousee_upcoming("1")
         assert result[0].get("info") is not None
