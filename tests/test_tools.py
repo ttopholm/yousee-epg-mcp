@@ -13,6 +13,7 @@ from yousee_epg.server import (
     yousee_programs,
     yousee_movies,
     yousee_search,
+    yousee_timeslot,
 )
 
 # Minimal channel list for _ensure_channel_names
@@ -241,4 +242,39 @@ class TestYouseeMovies:
             return_value=httpx.Response(200, json={"programs": []})
         )
         result = await yousee_movies()
+        assert result[0].get("info") is not None
+
+
+class TestYouseeTimeslot:
+    async def test_finds_programs_at_time(self, mock_api):
+        program = {
+            "title": "Aftenshowet",
+            "channelName": "DR1",
+            "channelId": "1",
+            "begin": "2026-03-18T19:00:00+01:00",
+            "end": "2026-03-18T20:30:00+01:00",
+        }
+        mock_api.get("/channels").mock(
+            return_value=httpx.Response(200, json=_EMPTY_CHANNELS_RESPONSE)
+        )
+        mock_api.get(url__regex=r"/channels/\d+/2026-03-18").mock(
+            return_value=httpx.Response(200, json={"programs": [program]})
+        )
+        result = await yousee_timeslot("20:00", "2026-03-18")
+        assert any(r["title"] == "Aftenshowet" for r in result)
+
+    async def test_no_programs_at_time(self, mock_api):
+        program = {
+            "title": "Morgen-TV",
+            "channelId": "1",
+            "begin": "2026-03-18T06:00:00+01:00",
+            "end": "2026-03-18T09:00:00+01:00",
+        }
+        mock_api.get("/channels").mock(
+            return_value=httpx.Response(200, json=_EMPTY_CHANNELS_RESPONSE)
+        )
+        mock_api.get(url__regex=r"/channels/\d+/2026-03-18").mock(
+            return_value=httpx.Response(200, json={"programs": [program]})
+        )
+        result = await yousee_timeslot("22:00", "2026-03-18")
         assert result[0].get("info") is not None

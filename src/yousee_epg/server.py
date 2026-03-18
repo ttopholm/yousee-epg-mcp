@@ -353,6 +353,46 @@ async def yousee_movies(date: str | None = None) -> list[dict]:
     return results or [{"info": f"Ingen film fundet på {date}."}]
 
 
+@mcp.tool()
+async def yousee_timeslot(time: str, date: str | None = None) -> list[dict]:
+    """Vis hvad der kører på populære kanaler på et givet tidspunkt.
+
+    Args:
+        time: Tidspunkt i HH:MM format (dansk tid), f.eks. "20:00".
+        date: Dato i YYYY-MM-DD format. Standard er i dag.
+    """
+    if date is None:
+        date = datetime.now().strftime("%Y-%m-%d")
+    await _ensure_channel_names()
+
+    hour, minute = int(time.split(":")[0]), int(time.split(":")[1])
+    target = datetime.strptime(date, "%Y-%m-%d").replace(
+        hour=hour, minute=minute, tzinfo=DK_TZ
+    )
+    target_utc = target.astimezone(timezone.utc)
+    sem = asyncio.Semaphore(10)
+
+    async def _get_at_time(ch_id: str) -> dict | None:
+        async with sem:
+            try:
+                data = await _get(f"channels/{ch_id}/{date}")
+                programs = _extract_list(data, "programs", "data", "result", "entries") or data
+            except Exception:
+                return None
+        for prog in programs if isinstance(programs, list) else []:
+            begin = _parse_time(prog.get("begin", ""))
+            end = _parse_time(prog.get("end", ""))
+            if begin and end and begin <= target_utc <= end:
+                return _summarize_program(prog)
+        return None
+
+    tasks = [_get_at_time(str(cid)) for cid in POPULAR_CHANNEL_IDS]
+    results = await asyncio.gather(*tasks)
+    filtered = [r for r in results if r is not None]
+
+    return filtered or [{"info": f"Ingen programmer fundet kl. {time} på {date}."}]
+
+
 # ─── Entry points ────────────────────────────────────────────────────────
 
 
