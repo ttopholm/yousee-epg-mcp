@@ -6,7 +6,6 @@ import respx
 
 from yousee_epg.server import (
     _channel_names,
-    _client,
     yousee_channels,
     yousee_genre,
     yousee_now_playing,
