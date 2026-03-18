@@ -437,6 +437,36 @@ async def yousee_program_details(title: str, channel_id: str | None = None, date
     return {"info": f"Programmet '{title}' blev ikke fundet på {date}."}
 
 
+@mcp.tool()
+async def yousee_upcoming(channel_id: str, limit: int = 5) -> list[dict]:
+    """Vis de næste programmer på en given kanal.
+
+    Args:
+        channel_id: Kanal-ID fra yousee_channels.
+        limit: Antal programmer at vise (1-10, standard 5).
+    """
+    limit = min(max(limit, 1), 10)
+    await _ensure_channel_names()
+    now = datetime.now(timezone.utc)
+    date = now.strftime("%Y-%m-%d")
+
+    try:
+        data = await _get(f"channels/{channel_id}/{date}")
+        programs = _extract_list(data, "programs", "data", "result", "entries") or data
+    except Exception:
+        return [{"info": f"Kunne ikke hente programmer for kanal {channel_id}."}]
+
+    upcoming = []
+    for prog in programs if isinstance(programs, list) else []:
+        end = _parse_time(prog.get("end", ""))
+        if end and end > now:
+            upcoming.append(_summarize_program(prog))
+
+    upcoming.sort(key=lambda p: p.get("begin", ""))
+
+    return upcoming[:limit] or [{"info": f"Ingen kommende programmer fundet for kanal {channel_id}."}]
+
+
 # ─── Entry points ────────────────────────────────────────────────────────
 
 
