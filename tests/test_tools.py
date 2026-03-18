@@ -10,6 +10,7 @@ from yousee_epg.server import (
     yousee_genre,
     yousee_now_playing,
     yousee_prime_time,
+    yousee_program_details,
     yousee_programs,
     yousee_movies,
     yousee_search,
@@ -278,3 +279,39 @@ class TestYouseeTimeslot:
         )
         result = await yousee_timeslot("22:00", "2026-03-18")
         assert result[0].get("info") is not None
+
+
+class TestYouseeProgramDetails:
+    async def test_finds_program_by_title(self, mock_api, sample_program):
+        mock_api.get("/channels").mock(
+            return_value=httpx.Response(200, json=_EMPTY_CHANNELS_RESPONSE)
+        )
+        mock_api.get(url__regex=r"/channels/\d+/\d{4}-\d{2}-\d{2}").mock(
+            return_value=httpx.Response(200, json={"programs": [sample_program]})
+        )
+        result = await yousee_program_details("Vild med dans")
+        assert result["title"] == "Vild med dans"
+        # Full description — not truncated to 300 chars
+        assert len(result.get("description", "")) > 300
+        # All cast members — not truncated to 5
+        assert len(result.get("cast", [])) == 6
+
+    async def test_finds_with_channel_id(self, mock_api, sample_program):
+        mock_api.get("/channels").mock(
+            return_value=httpx.Response(200, json=_EMPTY_CHANNELS_RESPONSE)
+        )
+        mock_api.get(url__regex=r"/channels/2/\d{4}-\d{2}-\d{2}").mock(
+            return_value=httpx.Response(200, json={"programs": [sample_program]})
+        )
+        result = await yousee_program_details("Vild med dans", channel_id="2")
+        assert result["title"] == "Vild med dans"
+
+    async def test_not_found(self, mock_api):
+        mock_api.get("/channels").mock(
+            return_value=httpx.Response(200, json=_EMPTY_CHANNELS_RESPONSE)
+        )
+        mock_api.get(url__regex=r"/channels/\d+/\d{4}-\d{2}-\d{2}").mock(
+            return_value=httpx.Response(200, json={"programs": []})
+        )
+        result = await yousee_program_details("Nonexistent")
+        assert result.get("info") is not None

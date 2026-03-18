@@ -393,6 +393,50 @@ async def yousee_timeslot(time: str, date: str | None = None) -> list[dict]:
     return filtered or [{"info": f"Ingen programmer fundet kl. {time} på {date}."}]
 
 
+@mcp.tool()
+async def yousee_program_details(title: str, channel_id: str | None = None, date: str | None = None) -> dict:
+    """Hent fuld programinfo uden afkortning — alle detaljer, cast, beskrivelse.
+
+    Args:
+        title: Programnavn at søge efter.
+        channel_id: Valgfrit kanal-ID for at begrænse søgningen.
+        date: Dato i YYYY-MM-DD format. Standard er i dag.
+    """
+    if date is None:
+        date = datetime.now().strftime("%Y-%m-%d")
+    await _ensure_channel_names()
+
+    title_lower = title.lower()
+    target_ids = [channel_id] if channel_id else [str(cid) for cid in POPULAR_CHANNEL_IDS]
+    sem = asyncio.Semaphore(10)
+
+    async def _find_program(ch_id: str) -> dict | None:
+        async with sem:
+            try:
+                data = await _get(f"channels/{ch_id}/{date}")
+                programs = _extract_list(data, "programs", "data", "result", "entries") or data
+            except Exception:
+                return None
+        for prog in programs if isinstance(programs, list) else []:
+            prog_title = (prog.get("title") or "").lower()
+            series_name = (prog.get("seriesName") or "").lower()
+            if title_lower in prog_title or title_lower in series_name:
+                ch_id_val = prog.get("channelId", "")
+                prog["channel"] = _channel_names.get(ch_id_val) or prog.get("channelName", "")
+                prog["begin"] = _format_dk_time(prog.get("begin", ""))
+                prog["end"] = _format_dk_time(prog.get("end", ""))
+                return prog
+        return None
+
+    tasks = [_find_program(cid) for cid in target_ids]
+    results = await asyncio.gather(*tasks)
+    for r in results:
+        if r is not None:
+            return r
+
+    return {"info": f"Programmet '{title}' blev ikke fundet på {date}."}
+
+
 # ─── Entry points ────────────────────────────────────────────────────────
 
 
