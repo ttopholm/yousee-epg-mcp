@@ -10,8 +10,11 @@ API:
 
 from datetime import datetime, timedelta, timezone
 import asyncio
+from zoneinfo import ZoneInfo
 from fastmcp import FastMCP
 import httpx
+
+DK_TZ = ZoneInfo("Europe/Copenhagen")
 
 mcp = FastMCP(
     "yousee-epg",
@@ -32,6 +35,23 @@ _client = httpx.AsyncClient(base_url=BASE_URL, timeout=15)
 # Populære danske kanaler til hurtig scanning
 POPULAR_CHANNEL_IDS = [1, 2, 3, 4, 5, 7, 8, 9, 10, 17, 25, 26, 30, 79, 264]
 
+# Cache: channel_id -> korrekt kanalnavn (dvbName/long_name)
+_channel_names: dict[int, str] = {}
+
+
+async def _ensure_channel_names() -> None:
+    """Hent og cache kanalnavne hvis ikke allerede hentet."""
+    if _channel_names:
+        return
+    data = await _get("channels")
+    channels = _extract_list(data, "channels", "data", "result") or data
+    for ch in channels:
+        ch_id = ch.get("id")
+        if ch_id:
+            _channel_names[ch_id] = (
+                ch.get("dvbName") or ch.get("long_name") or ch.get("name", "")
+            )
+
 
 async def _get(path: str) -> dict | list:
     """GET request til YouSee EPG API."""
@@ -51,14 +71,23 @@ def _extract_list(data, *keys) -> list:
     return []
 
 
+def _format_dk_time(time_str: str) -> str:
+    """Konverter ISO tidspunkt til dansk lokal tid."""
+    dt = _parse_time(time_str)
+    if not dt:
+        return time_str
+    return dt.astimezone(DK_TZ).isoformat()
+
+
 def _summarize_program(prog: dict) -> dict:
     """Lav et kompakt summary af et program."""
+    ch_id = prog.get("channelId", "")
     return {
         "title": prog.get("title", ""),
-        "channel": prog.get("channelName", ""),
-        "channel_id": prog.get("channelId", ""),
-        "begin": prog.get("begin", ""),
-        "end": prog.get("end", ""),
+        "channel": _channel_names.get(ch_id) or prog.get("channelName", ""),
+        "channel_id": ch_id,
+        "begin": _format_dk_time(prog.get("begin", "")),
+        "end": _format_dk_time(prog.get("end", "")),
         "description": (prog.get("description") or "")[:300],
         "genre": prog.get("genreName", ""),
         "sub_genre": prog.get("subGenreName", ""),
@@ -111,6 +140,7 @@ async def yousee_programs(channel_id: str, date: str | None = None) -> list:
     """
     if date is None:
         date = datetime.now().strftime("%Y-%m-%d")
+    await _ensure_channel_names()
     data = await _get(f"channels/{channel_id}/{date}")
     programs = _extract_list(data, "programs", "data", "result", "entries") or data
     return [_summarize_program(p) for p in programs] if isinstance(programs, list) else programs
@@ -125,6 +155,7 @@ async def yousee_search(query: str, days: int = 3) -> list[dict]:
         days: Antal dage frem at søge (1-7, standard 3).
     """
     days = min(max(days, 1), 7)
+    await _ensure_channel_names()
     channels = await _get("channels")
     channels = _extract_list(channels, "channels", "data", "result") or channels
     if not channels:
@@ -172,6 +203,7 @@ async def yousee_now_playing(channel_id: str | None = None) -> list[dict]:
     Args:
         channel_id: Valgfrit. Specifikt kanal-ID. Uden dette vises de mest populære kanaler.
     """
+    await _ensure_channel_names()
     now = datetime.now(timezone.utc)
     date = now.strftime("%Y-%m-%d")
     sem = asyncio.Semaphore(10)
@@ -209,10 +241,11 @@ async def yousee_prime_time(date: str | None = None) -> list[dict]:
     """
     if date is None:
         date = datetime.now().strftime("%Y-%m-%d")
+    await _ensure_channel_names()
 
-    # Prime time: 19:00-22:00 dansk tid (UTC+1/+2)
-    prime_start_hour = 17  # 19 CET = 17 UTC (vinter) / 17 CEST = 17 UTC (sommer-ish)
-    prime_end_hour = 21
+    # Prime time: 19:00-22:00 dansk tid
+    prime_start_hour = 19
+    prime_end_hour = 22
 
     sem = asyncio.Semaphore(10)
 
@@ -229,8 +262,10 @@ async def yousee_prime_time(date: str | None = None) -> list[dict]:
             end = _parse_time(prog.get("end", ""))
             if not begin or not end:
                 continue
-            # Overlap med prime time vindue
-            if begin.hour < prime_end_hour and end.hour >= prime_start_hour:
+            # Konverter til dansk tid og tjek overlap med prime time
+            begin_dk = begin.astimezone(DK_TZ)
+            end_dk = end.astimezone(DK_TZ)
+            if begin_dk.hour < prime_end_hour and end_dk.hour >= prime_start_hour:
                 hits.append(_summarize_program(prog))
         return hits
 
@@ -251,6 +286,7 @@ async def yousee_genre(genre: str, date: str | None = None) -> list[dict]:
     """
     if date is None:
         date = datetime.now().strftime("%Y-%m-%d")
+    await _ensure_channel_names()
 
     genre_lower = genre.lower()
     sem = asyncio.Semaphore(10)
