@@ -314,6 +314,45 @@ async def yousee_genre(genre: str, date: str | None = None) -> list[dict]:
     return results or [{"info": f"Ingen '{genre}' programmer fundet på {date}."}]
 
 
+@mcp.tool()
+async def yousee_movies(date: str | None = None) -> list[dict]:
+    """Find alle film på TV i dag på tværs af populære kanaler.
+
+    Args:
+        date: Dato i YYYY-MM-DD format. Standard er i dag.
+    """
+    if date is None:
+        date = datetime.now().strftime("%Y-%m-%d")
+    await _ensure_channel_names()
+    now = datetime.now(timezone.utc)
+    sem = asyncio.Semaphore(10)
+
+    async def _get_movies(ch_id: str) -> list[dict]:
+        async with sem:
+            try:
+                data = await _get(f"channels/{ch_id}/{date}")
+                programs = _extract_list(data, "programs", "data", "result", "entries") or data
+            except Exception:
+                return []
+        hits = []
+        for prog in programs if isinstance(programs, list) else []:
+            genre = (prog.get("genreName") or "").lower()
+            if "film" not in genre:
+                continue
+            end = _parse_time(prog.get("end", ""))
+            if end and end < now:
+                continue
+            hits.append(_summarize_program(prog))
+        return hits
+
+    tasks = [_get_movies(str(cid)) for cid in POPULAR_CHANNEL_IDS]
+    all_hits = await asyncio.gather(*tasks)
+    results = [hit for hits in all_hits for hit in hits]
+    results.sort(key=lambda p: p.get("begin", ""))
+
+    return results or [{"info": f"Ingen film fundet på {date}."}]
+
+
 # ─── Entry points ────────────────────────────────────────────────────────
 
 

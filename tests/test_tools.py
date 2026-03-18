@@ -1,4 +1,4 @@
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 
 import httpx
 import pytest
@@ -11,6 +11,7 @@ from yousee_epg.server import (
     yousee_now_playing,
     yousee_prime_time,
     yousee_programs,
+    yousee_movies,
     yousee_search,
 )
 
@@ -182,4 +183,62 @@ class TestYouseeGenre:
             return_value=httpx.Response(200, json={"programs": []})
         )
         result = await yousee_genre("Opera", "2026-03-18")
+        assert result[0].get("info") is not None
+
+
+class TestYouseeMovies:
+    async def test_finds_movies(self, mock_api):
+        now = datetime.now(timezone.utc)
+        movie = {
+            "title": "The Matrix",
+            "channelName": "TV 2",
+            "channelId": "2",
+            "begin": (now + timedelta(hours=1)).isoformat(),
+            "end": (now + timedelta(hours=3)).isoformat(),
+            "genreName": "Film",
+        }
+        non_movie = {
+            "title": "Nyheder",
+            "channelName": "DR1",
+            "channelId": "1",
+            "begin": (now + timedelta(hours=1)).isoformat(),
+            "end": (now + timedelta(hours=2)).isoformat(),
+            "genreName": "Nyheder",
+        }
+        mock_api.get("/channels").mock(
+            return_value=httpx.Response(200, json=_EMPTY_CHANNELS_RESPONSE)
+        )
+        mock_api.get(url__regex=r"/channels/\d+/\d{4}-\d{2}-\d{2}").mock(
+            return_value=httpx.Response(200, json={"programs": [movie, non_movie]})
+        )
+        result = await yousee_movies()
+        assert all(r.get("genre", "").lower() == "film" for r in result)
+        assert any(r["title"] == "The Matrix" for r in result)
+
+    async def test_excludes_past_movies(self, mock_api):
+        now = datetime.now(timezone.utc)
+        past_movie = {
+            "title": "Old Movie",
+            "channelId": "1",
+            "begin": (now - timedelta(hours=4)).isoformat(),
+            "end": (now - timedelta(hours=2)).isoformat(),
+            "genreName": "Film",
+        }
+        mock_api.get("/channels").mock(
+            return_value=httpx.Response(200, json=_EMPTY_CHANNELS_RESPONSE)
+        )
+        mock_api.get(url__regex=r"/channels/\d+/\d{4}-\d{2}-\d{2}").mock(
+            return_value=httpx.Response(200, json={"programs": [past_movie]})
+        )
+        result = await yousee_movies()
+        assert result[0].get("info") is not None
+
+    async def test_no_movies_found(self, mock_api):
+        mock_api.get("/channels").mock(
+            return_value=httpx.Response(200, json=_EMPTY_CHANNELS_RESPONSE)
+        )
+        mock_api.get(url__regex=r"/channels/\d+/\d{4}-\d{2}-\d{2}").mock(
+            return_value=httpx.Response(200, json={"programs": []})
+        )
+        result = await yousee_movies()
         assert result[0].get("info") is not None
