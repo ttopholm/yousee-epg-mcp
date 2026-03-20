@@ -481,7 +481,7 @@ def main():
 
 def main_http():
     """Kør som HTTP MCP-server (ChatGPT, remote klienter)."""
-    mcp.run(transport="streamable-http", host="0.0.0.0", port=8000)
+    mcp.run(transport="streamable-http", host="0.0.0.0", port=8000, stateless_http=True)
 
 
 if __name__ == "__main__":
