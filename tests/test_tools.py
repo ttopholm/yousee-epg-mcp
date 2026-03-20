@@ -6,6 +6,7 @@ import respx
 
 from yousee_epg.server import (
     _channel_names,
+    _programs_cache,
     yousee_channels,
     yousee_genre,
     yousee_now_playing,
@@ -17,6 +18,7 @@ from yousee_epg.server import (
     yousee_timeslot,
     yousee_upcoming,
 )
+import yousee_epg.server as _server
 
 # Minimal channel list for _ensure_channel_names
 _EMPTY_CHANNELS_RESPONSE = {"channels": [{"id": 1, "long_name": "DR1", "name": "DR1"}]}
@@ -26,6 +28,8 @@ _EMPTY_CHANNELS_RESPONSE = {"channels": [{"id": 1, "long_name": "DR1", "name": "
 def mock_api():
     """Activate respx mocking for all tests."""
     _channel_names.clear()
+    _programs_cache.clear()
+    _server._channels_cache = None
     with respx.mock(base_url="https://secure.yousee.tv/epg/v2", assert_all_called=False) as mock:
         yield mock
 
