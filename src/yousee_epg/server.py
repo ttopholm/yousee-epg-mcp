@@ -8,16 +8,55 @@ API:
   GET https://secure.yousee.tv/epg/v2/channels/:channelid/:date  (±7 dage)
 """
 
+from contextlib import asynccontextmanager
 from datetime import datetime, timedelta, timezone
+from dataclasses import dataclass, field
 import asyncio
+import logging
+import time
 from zoneinfo import ZoneInfo
 from fastmcp import FastMCP
 import httpx
 
+logger = logging.getLogger(__name__)
+
 DK_TZ = ZoneInfo("Europe/Copenhagen")
+
+# Cache TTL i sekunder
+PROGRAMS_TTL = 30 * 60   # 30 minutter for programdata
+CHANNELS_TTL = 24 * 3600  # 24 timer for kanalliste
+
+# Sæt med cache-nøgler der er ved at blive revalideret i baggrunden
+_revalidating: set[str] = set()
+
+
+@dataclass
+class _CacheEntry:
+    data: list | dict
+    ts: float = field(default_factory=time.monotonic)
+
+    def expired(self, ttl: float) -> bool:
+        return (time.monotonic() - self.ts) >= ttl
+
+
+# Cache: (channel_id, date) -> CacheEntry med programliste
+_programs_cache: dict[tuple[str, str], _CacheEntry] = {}
+# Cache for kanalliste
+_channels_cache: _CacheEntry | None = None
+
+@asynccontextmanager
+async def _lifespan(server):
+    """Warmup cache ved opstart, opryd ved shutdown."""
+    logger.info("EPG warmup: henter kanaler og dagens programmer...")
+    await _warmup()
+    logger.info("EPG warmup færdig — cache klar.")
+    yield
+    _programs_cache.clear()
+
 
 mcp = FastMCP(
     "yousee-epg",
+    lifespan=_lifespan,
     instructions=(
         "YouSee TV-guide for danske TV-kanaler. "
         "Brug yousee_channels til kanal-ID'er, "
@@ -43,18 +82,111 @@ POPULAR_CHANNEL_IDS = [1, 2, 3, 4, 5, 7, 8, 9, 10, 17, 25, 26, 30, 79, 264]
 _channel_names: dict[int, str] = {}
 
 
+async def _get_channels_cached() -> list:
+    """Hent kanalliste med caching (24 timer TTL) og stale-while-revalidate."""
+    global _channels_cache
+    if _channels_cache:
+        if not _channels_cache.expired(CHANNELS_TTL):
+            return _channels_cache.data
+        # Stale: returner gammel data og opdater i baggrunden
+        rkey = "__channels__"
+        if rkey not in _revalidating:
+            _revalidating.add(rkey)
+            asyncio.create_task(_revalidate_channels(rkey))
+        return _channels_cache.data
+    # Intet cachet endnu — hent synkront
+    data = await _get("channels")
+    channels = _extract_list(data, "channels", "data", "result") or data
+    _channels_cache = _CacheEntry(data=channels)
+    return channels
+
+
+async def _revalidate_channels(rkey: str) -> None:
+    """Baggrunds-revalidering af kanalliste."""
+    global _channels_cache
+    try:
+        data = await _get("channels")
+        channels = _extract_list(data, "channels", "data", "result") or data
+        _channels_cache = _CacheEntry(data=channels)
+    except Exception:
+        pass  # Behold stale data ved fejl
+    finally:
+        _revalidating.discard(rkey)
+
+
+async def _get_programs_cached(channel_id: str, date: str) -> list:
+    """Hent programliste for en kanal+dato med caching (30 min TTL) og stale-while-revalidate."""
+    key = (channel_id, date)
+    entry = _programs_cache.get(key)
+    if entry:
+        if not entry.expired(PROGRAMS_TTL):
+            return entry.data
+        # Stale: returner gammel data og opdater i baggrunden
+        rkey = f"programs:{channel_id}:{date}"
+        if rkey not in _revalidating:
+            _revalidating.add(rkey)
+            asyncio.create_task(_revalidate_programs(channel_id, date, rkey))
+        return entry.data
+    # Intet cachet endnu — hent synkront
+    data = await _get(f"channels/{channel_id}/{date}")
+    programs = _extract_list(data, "programs", "data", "result", "entries") or data
+    _programs_cache[key] = _CacheEntry(data=programs)
+    return programs
+
+
+async def _revalidate_programs(channel_id: str, date: str, rkey: str) -> None:
+    """Baggrunds-revalidering af programdata."""
+    try:
+        data = await _get(f"channels/{channel_id}/{date}")
+        programs = _extract_list(data, "programs", "data", "result", "entries") or data
+        _programs_cache[(channel_id, date)] = _CacheEntry(data=programs)
+    except Exception:
+        pass  # Behold stale data ved fejl
+    finally:
+        _revalidating.discard(rkey)
+
+
 async def _ensure_channel_names() -> None:
     """Hent og cache kanalnavne hvis ikke allerede hentet."""
     if _channel_names:
         return
-    data = await _get("channels")
-    channels = _extract_list(data, "channels", "data", "result") or data
+    channels = await _get_channels_cached()
     for ch in channels:
         ch_id = ch.get("id")
         if ch_id:
             _channel_names[ch_id] = (
                 ch.get("dvbName") or ch.get("long_name") or ch.get("name", "")
             )
+
+
+def _cleanup_old_dates() -> int:
+    """Fjern cache-entries for datoer der er ældre end i dag. Returnerer antal fjernede."""
+    today = datetime.now().strftime("%Y-%m-%d")
+    old_keys = [k for k in _programs_cache if k[1] < today]
+    for k in old_keys:
+        del _programs_cache[k]
+    return len(old_keys)
+
+
+async def _warmup() -> None:
+    """Prefetch kanalliste og dagens programmer for populære kanaler ved opstart."""
+    try:
+        await _get_channels_cached()
+        await _ensure_channel_names()
+        today = datetime.now().strftime("%Y-%m-%d")
+        sem = asyncio.Semaphore(10)
+
+        async def _fetch(ch_id: str) -> None:
+            async with sem:
+                try:
+                    await _get_programs_cached(ch_id, today)
+                except Exception:
+                    pass
+
+        await asyncio.gather(*[_fetch(str(cid)) for cid in POPULAR_CHANNEL_IDS])
+        _cleanup_old_dates()
+    except Exception:
+        pass  # Warmup-fejl er ikke kritiske
 
 
 async def _get(path: str) -> dict | list:
@@ -120,8 +252,7 @@ def _parse_time(time_str: str) -> datetime | None:
 @mcp.tool()
 async def yousee_channels() -> list:
     """Hent alle tilgængelige YouSee TV-kanaler med ID og navn."""
-    data = await _get("channels")
-    channels = _extract_list(data, "channels", "data", "result") or data
+    channels = await _get_channels_cached()
     # Returner kun de mest nyttige felter
     return [
         {
@@ -145,8 +276,7 @@ async def yousee_programs(channel_id: str, date: str | None = None) -> list:
     if date is None:
         date = datetime.now().strftime("%Y-%m-%d")
     await _ensure_channel_names()
-    data = await _get(f"channels/{channel_id}/{date}")
-    programs = _extract_list(data, "programs", "data", "result", "entries") or data
+    programs = await _get_programs_cached(channel_id, date)
     return [_summarize_program(p) for p in programs] if isinstance(programs, list) else programs
 
 
@@ -160,8 +290,7 @@ async def yousee_search(query: str, days: int = 3) -> list[dict]:
     """
     days = min(max(days, 1), 7)
     await _ensure_channel_names()
-    channels = await _get("channels")
-    channels = _extract_list(channels, "channels", "data", "result") or channels
+    channels = await _get_channels_cached()
     if not channels:
         return [{"error": "Kunne ikke hente kanaler"}]
 
@@ -172,8 +301,7 @@ async def yousee_search(query: str, days: int = 3) -> list[dict]:
     async def _fetch_and_filter(ch_id: str, date: str) -> list[dict]:
         async with sem:
             try:
-                data = await _get(f"channels/{ch_id}/{date}")
-                programs = _extract_list(data, "programs", "data", "result", "entries") or data
+                programs = await _get_programs_cached(ch_id, date)
             except Exception:
                 return []
         hits = []
@@ -220,8 +348,7 @@ async def yousee_now_playing(channel_id: str | None = None) -> list[dict]:
     async def _get_current(ch_id: str) -> dict | None:
         async with sem:
             try:
-                data = await _get(f"channels/{ch_id}/{date}")
-                programs = _extract_list(data, "programs", "data", "result", "entries") or data
+                programs = await _get_programs_cached(ch_id, date)
             except Exception:
                 return None
         for prog in programs if isinstance(programs, list) else []:
@@ -256,8 +383,7 @@ async def yousee_prime_time(date: str | None = None) -> list[dict]:
     async def _get_prime(ch_id: str) -> list[dict]:
         async with sem:
             try:
-                data = await _get(f"channels/{ch_id}/{date}")
-                programs = _extract_list(data, "programs", "data", "result", "entries") or data
+                programs = await _get_programs_cached(ch_id, date)
             except Exception:
                 return []
         hits = []
@@ -298,8 +424,7 @@ async def yousee_genre(genre: str, date: str | None = None) -> list[dict]:
     async def _get_by_genre(ch_id: str) -> list[dict]:
         async with sem:
             try:
-                data = await _get(f"channels/{ch_id}/{date}")
-                programs = _extract_list(data, "programs", "data", "result", "entries") or data
+                programs = await _get_programs_cached(ch_id, date)
             except Exception:
                 return []
         hits = []
@@ -334,8 +459,7 @@ async def yousee_movies(date: str | None = None) -> list[dict]:
     async def _get_movies(ch_id: str) -> list[dict]:
         async with sem:
             try:
-                data = await _get(f"channels/{ch_id}/{date}")
-                programs = _extract_list(data, "programs", "data", "result", "entries") or data
+                programs = await _get_programs_cached(ch_id, date)
             except Exception:
                 return []
         hits = []
@@ -379,8 +503,7 @@ async def yousee_timeslot(time: str, date: str | None = None) -> list[dict]:
     async def _get_at_time(ch_id: str) -> dict | None:
         async with sem:
             try:
-                data = await _get(f"channels/{ch_id}/{date}")
-                programs = _extract_list(data, "programs", "data", "result", "entries") or data
+                programs = await _get_programs_cached(ch_id, date)
             except Exception:
                 return None
         for prog in programs if isinstance(programs, list) else []:
@@ -417,8 +540,7 @@ async def yousee_program_details(title: str, channel_id: str | None = None, date
     async def _find_program(ch_id: str) -> dict | None:
         async with sem:
             try:
-                data = await _get(f"channels/{ch_id}/{date}")
-                programs = _extract_list(data, "programs", "data", "result", "entries") or data
+                programs = await _get_programs_cached(ch_id, date)
             except Exception:
                 return None
         for prog in programs if isinstance(programs, list) else []:
@@ -455,8 +577,7 @@ async def yousee_upcoming(channel_id: str, limit: int = 5) -> list[dict]:
     date = now.strftime("%Y-%m-%d")
 
     try:
-        data = await _get(f"channels/{channel_id}/{date}")
-        programs = _extract_list(data, "programs", "data", "result", "entries") or data
+        programs = await _get_programs_cached(channel_id, date)
     except Exception:
         return [{"info": f"Kunne ikke hente programmer for kanal {channel_id}."}]
 
