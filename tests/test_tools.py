@@ -1,4 +1,6 @@
 from datetime import datetime, timedelta, timezone
+import asyncio
+import time
 
 import httpx
 import pytest
@@ -7,6 +9,14 @@ import respx
 from yousee_epg.server import (
     _channel_names,
     _programs_cache,
+    _revalidating,
+    _cleanup_old_dates,
+    _warmup,
+    _CacheEntry,
+    _get_channels_cached,
+    _get_programs_cached,
+    PROGRAMS_TTL,
+    CHANNELS_TTL,
     yousee_channels,
     yousee_genre,
     yousee_now_playing,
@@ -29,6 +39,7 @@ def mock_api():
     """Activate respx mocking for all tests."""
     _channel_names.clear()
     _programs_cache.clear()
+    _revalidating.clear()
     _server._channels_cache = None
     with respx.mock(base_url="https://secure.yousee.tv/epg/v2", assert_all_called=False) as mock:
         yield mock
@@ -402,3 +413,117 @@ class TestYouseeUpcoming:
         )
         result = await yousee_upcoming("1")
         assert result[0].get("info") is not None
+
+
+class TestStaleWhileRevalidate:
+    async def test_returns_stale_programs_and_revalidates(self, mock_api):
+        """Expired cache returnerer stale data og opdaterer i baggrunden."""
+        # Præfyld cache med gammel entry
+        old_prog = [{"title": "Old", "channelId": "1"}]
+        _programs_cache[("1", "2026-03-18")] = _CacheEntry(
+            data=old_prog, ts=time.monotonic() - PROGRAMS_TTL - 10
+        )
+        new_prog = [{"title": "New", "channelId": "1"}]
+        mock_api.get("/channels/1/2026-03-18").mock(
+            return_value=httpx.Response(200, json={"programs": new_prog})
+        )
+
+        # Skal returnere stale data med det samme
+        result = await _get_programs_cached("1", "2026-03-18")
+        assert result[0]["title"] == "Old"
+
+        # Vent på baggrunds-task
+        await asyncio.sleep(0.1)
+
+        # Nu skal cachen være opdateret
+        result2 = await _get_programs_cached("1", "2026-03-18")
+        assert result2[0]["title"] == "New"
+
+    async def test_returns_stale_channels_and_revalidates(self, mock_api):
+        """Expired kanalliste returnerer stale data og opdaterer i baggrunden."""
+        old_channels = [{"id": 1, "name": "Old DR1"}]
+        _server._channels_cache = _CacheEntry(
+            data=old_channels, ts=time.monotonic() - CHANNELS_TTL - 10
+        )
+        new_channels = [{"id": 1, "name": "New DR1"}]
+        mock_api.get("/channels").mock(
+            return_value=httpx.Response(200, json={"channels": new_channels})
+        )
+
+        result = await _get_channels_cached()
+        assert result[0]["name"] == "Old DR1"
+
+        await asyncio.sleep(0.1)
+
+        result2 = await _get_channels_cached()
+        assert result2[0]["name"] == "New DR1"
+
+    async def test_revalidation_error_keeps_stale_data(self, mock_api):
+        """Fejl under revalidering beholder stale data."""
+        old_prog = [{"title": "Stale", "channelId": "1"}]
+        _programs_cache[("1", "2026-03-18")] = _CacheEntry(
+            data=old_prog, ts=time.monotonic() - PROGRAMS_TTL - 10
+        )
+        mock_api.get("/channels/1/2026-03-18").mock(
+            return_value=httpx.Response(500)
+        )
+
+        result = await _get_programs_cached("1", "2026-03-18")
+        assert result[0]["title"] == "Stale"
+
+        await asyncio.sleep(0.1)
+
+        # Stadig stale data efter fejl
+        entry = _programs_cache[("1", "2026-03-18")]
+        assert entry.data[0]["title"] == "Stale"
+
+
+class TestCleanupOldDates:
+    def test_removes_old_dates(self):
+        """Fjerner cache-entries for datoer ældre end i dag."""
+        today = datetime.now().strftime("%Y-%m-%d")
+        _programs_cache[("1", "2020-01-01")] = _CacheEntry(data=[])
+        _programs_cache[("2", "2020-06-15")] = _CacheEntry(data=[])
+        _programs_cache[("1", today)] = _CacheEntry(data=[{"title": "Today"}])
+
+        removed = _cleanup_old_dates()
+        assert removed == 2
+        assert ("1", today) in _programs_cache
+        assert ("1", "2020-01-01") not in _programs_cache
+
+    def test_no_old_dates(self):
+        """Ingen gamle datoer at fjerne."""
+        today = datetime.now().strftime("%Y-%m-%d")
+        _programs_cache[("1", today)] = _CacheEntry(data=[])
+        removed = _cleanup_old_dates()
+        assert removed == 0
+
+
+class TestWarmup:
+    async def test_warmup_populates_cache(self, mock_api):
+        """Warmup fylder cache med kanaler og programmer for populære kanaler."""
+        channels = [{"id": cid, "long_name": f"Kanal {cid}", "name": f"K{cid}"} for cid in [1, 2, 3]]
+        mock_api.get("/channels").mock(
+            return_value=httpx.Response(200, json={"channels": channels})
+        )
+        today = datetime.now().strftime("%Y-%m-%d")
+        mock_api.get(url__regex=r"/channels/\d+/" + today).mock(
+            return_value=httpx.Response(200, json={"programs": [{"title": "Test", "channelId": "1"}]})
+        )
+
+        await _warmup()
+
+        # Kanalliste skal være cachet
+        assert _server._channels_cache is not None
+        # Kanalnavne skal være cachet
+        assert len(_channel_names) == 3
+        assert _channel_names[1] == "Kanal 1"
+
+    async def test_warmup_survives_api_error(self, mock_api):
+        """Warmup fejler gracefully ved API-fejl."""
+        mock_api.get("/channels").mock(
+            return_value=httpx.Response(500)
+        )
+        # Skal ikke kaste exception
+        await _warmup()
+        assert _server._channels_cache is None
