@@ -592,6 +592,111 @@ async def yousee_upcoming(channel_id: str, limit: int = 5) -> list[dict]:
     return upcoming[:limit] or [{"info": f"Ingen kommende programmer fundet for kanal {channel_id}."}]
 
 
+# ─── Resources ────────────────────────────────────────────────────────────
+
+
+@mcp.resource("yousee://channels", name="Kanalliste", description="Alle tilgængelige YouSee TV-kanaler med ID og navn.")
+async def resource_channels() -> str:
+    """Returner kanalliste som kontekst."""
+    channels = await yousee_channels()
+    lines = [f"- {ch['name']} (ID: {ch['id']})" for ch in channels if isinstance(ch, dict) and ch.get("id")]
+    return "YouSee TV-kanaler:\n" + "\n".join(lines)
+
+
+@mcp.resource("yousee://now", name="Lige nu på TV", description="Hvad der sendes lige nu på populære danske kanaler.")
+async def resource_now_playing() -> str:
+    """Returner hvad der kører lige nu."""
+    programs = await yousee_now_playing()
+    if not programs or (len(programs) == 1 and "info" in programs[0]):
+        return "Ingen programmer kører lige nu."
+    lines = []
+    for p in programs:
+        lines.append(f"- {p.get('channel', '?')}: {p.get('title', '?')} ({p.get('begin', '?')} - {p.get('end', '?')})")
+    return "Lige nu på TV:\n" + "\n".join(lines)
+
+
+@mcp.resource(
+    "yousee://primetime/{date}",
+    name="Prime time",
+    description="Aftenens programmer (19-22) på populære kanaler for en given dato (YYYY-MM-DD).",
+)
+async def resource_prime_time(date: str) -> str:
+    """Returner prime time programmer for en dato."""
+    programs = await yousee_prime_time(date)
+    if not programs or (len(programs) == 1 and "info" in programs[0]):
+        return f"Ingen prime time programmer fundet for {date}."
+    lines = []
+    for p in programs:
+        lines.append(f"- {p.get('channel', '?')}: {p.get('title', '?')} ({p.get('begin', '?')} - {p.get('end', '?')})")
+    return f"Prime time {date}:\n" + "\n".join(lines)
+
+
+# ─── Prompts ──────────────────────────────────────────────────────────────
+
+
+@mcp.prompt(name="tv-aften", description="Hvad skal jeg se i aften? Få personlige anbefalinger baseret på aftenens programmer.")
+async def prompt_tv_aften() -> str:
+    """Generer en prompt der hjælper med at finde aftenens TV."""
+    date = datetime.now().strftime("%Y-%m-%d")
+    programs = await yousee_prime_time(date)
+    if not programs or (len(programs) == 1 and "info" in programs[0]):
+        return "Der er ingen programmer i aften. Prøv en anden dato."
+
+    program_list = "\n".join(
+        f"- {p.get('channel', '?')}: {p.get('title', '?')} kl. {p.get('begin', '?')}-{p.get('end', '?')} ({p.get('genre', 'Ukendt genre')}){' — ' + p.get('description', '') if p.get('description') else ''}"
+        for p in programs
+    )
+    return (
+        f"Her er aftenens TV-programmer (prime time {date}):\n\n"
+        f"{program_list}\n\n"
+        "Hjælp brugeren med at vælge hvad de skal se i aften. "
+        "Spørg om de foretrækker en bestemt genre, "
+        "og giv personlige anbefalinger baseret på programoversigten."
+    )
+
+
+@mcp.prompt(name="find-program", description="Søg efter et bestemt TV-program og find ud af hvornår det sendes.")
+async def prompt_find_program(query: str) -> str:
+    """Generer en prompt der søger efter et program."""
+    results = await yousee_search(query, days=7)
+    if not results or (len(results) == 1 and "info" in results[0]):
+        return f"Programmet '{query}' blev ikke fundet i de næste 7 dage. Prøv et andet søgeord."
+
+    program_list = "\n".join(
+        f"- {r.get('channel', '?')}: {r.get('title', '?')} — {r.get('begin', '?')} ({r.get('genre', '')})"
+        for r in results[:20]
+    )
+    return (
+        f"Søgeresultater for '{query}':\n\n"
+        f"{program_list}\n\n"
+        "Præsenter resultaterne overskueligt for brugeren. "
+        "Fremhæv hvornår programmet sendes næste gang."
+    )
+
+
+@mcp.prompt(name="film-i-aften", description="Find film på TV i aften — perfekt til en filmaften.")
+async def prompt_film_i_aften() -> str:
+    """Generer en prompt der finder film på TV."""
+    date = datetime.now().strftime("%Y-%m-%d")
+    movies = await yousee_movies(date)
+    if not movies or (len(movies) == 1 and "info" in movies[0]):
+        return "Der er ingen film på TV i aften. Prøv en anden dato."
+
+    movie_list = "\n".join(
+        f"- {m.get('channel', '?')}: {m.get('title', '?')} kl. {m.get('begin', '?')}-{m.get('end', '?')}"
+        f"{' (' + str(m.get('year', '')) + ')' if m.get('year') else ''}"
+        f"{' — ' + m.get('description', '') if m.get('description') else ''}"
+        for m in movies
+    )
+    return (
+        f"Film på TV i dag ({date}):\n\n"
+        f"{movie_list}\n\n"
+        "Hjælp brugeren med at vælge en film. "
+        "Spørg om de foretrækker en bestemt genre eller stemning, "
+        "og anbefal den bedste film ud fra hvad der er tilgængeligt."
+    )
+
+
 # ─── Entry points ────────────────────────────────────────────────────────
 
 
